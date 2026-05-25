@@ -52,7 +52,7 @@ import plotly.graph_objects as go
 #     4. Coller cet identifiant entre les guillemets de GOOGLE_SHEET_ID.
 #     Dès que GOOGLE_SHEET_ID est renseigné, le dashboard lit Google Sheets.
 # ---------------------------------------------------------------------------
-GOOGLE_SHEET_ID = "1y9MpwI9AQcz21KZNHJOq7j3u7Zff9lXnto_bXBxe8nk"   # <-- coller ici l'identifiant du Google Sheets (MODE 2)
+GOOGLE_SHEET_ID = ""   # <-- coller ici l'identifiant du Google Sheets (MODE 2)
 
 CHEMIN_FICHIER = "Outil_Pilotage_SE_EquiFilles_v5.xlsx"  # utilisé en MODE 1
 
@@ -144,6 +144,33 @@ def charger_donnees():
         qualitatif = qualitatif.dropna(subset=["Type de fiche"])
         qualitatif = qualitatif[qualitatif["Type de fiche"].astype(str).str.strip() != ""]
 
+    # --- Conversion des colonnes numériques ---------------------------------
+    # Quand les données viennent de Google Sheets, les nombres peuvent être lus
+    # comme du texte (espaces, formats). On les force en numérique ici.
+    def num(df, colonnes):
+        for c in colonnes:
+            if c in df.columns:
+                # Retire espaces insécables et espaces, remplace virgule décimale
+                serie = (df[c].astype(str)
+                         .str.replace("\u202f", "", regex=False)
+                         .str.replace("\xa0", "", regex=False)
+                         .str.replace(" ", "", regex=False)
+                         .str.replace(",", ".", regex=False))
+                df[c] = pd.to_numeric(serie, errors="coerce").fillna(0)
+        return df
+
+    activites = num(activites, ["Pourcentage prevu", "Pourcentage reel",
+                                "Budget prevu", "Budget consomme",
+                                "Criticite", "Note", "Quantite cible",
+                                "Quantite realisee"])
+    indicateurs = num(indicateurs, ["Cible", "Valeur cumulee",
+                                    "Pourcentage atteinte"])
+    agents = num(agents, ["Total activites", "Activites EQUIFILLES",
+                          "Activites S2L", "Score consolide",
+                          "Activites critiques", "Activites en retard",
+                          "Activites terminees"])
+    financier = num(financier, ["Montant prevu", "Montant recu"])
+
     return activites, indicateurs, agents, financier, qualitatif
 
 
@@ -162,6 +189,35 @@ def kpi(colonne, libelle, valeur, couleur="#1F3864"):
         """,
         unsafe_allow_html=True,
     )
+
+
+def fmt_fcfa(valeur):
+    """Formate un montant en FCFA, de façon sûre même si la valeur est du texte."""
+    try:
+        return f"{float(valeur):,.0f}".replace(",", " ")
+    except (ValueError, TypeError):
+        return "0"
+
+
+def fmt_pct(valeur):
+    """Formate un pourcentage. Accepte une fraction (0-1) ou un nombre (0-100)."""
+    try:
+        v = float(valeur)
+    except (ValueError, TypeError):
+        return "0%"
+    # Si la valeur est une fraction (<= 1.5), la convertir en pourcentage.
+    if abs(v) <= 1.5:
+        v = v * 100
+    return f"{v:.0f}%"
+
+
+def en_pourcentage(serie):
+    """Convertit une colonne en pourcentage 0-100, qu'elle soit en fraction ou non."""
+    s = pd.to_numeric(serie, errors="coerce").fillna(0)
+    # Si le maximum est <= 1.5, les valeurs sont des fractions -> x100
+    if len(s) > 0 and s.max() <= 1.5:
+        s = s * 100
+    return s
 
 
 def filtrer_projet(df, projet_choisi, colonne="Projet"):
@@ -234,9 +290,8 @@ if page == "🏠 Vue Direction":
 
     st.markdown("<br>", unsafe_allow_html=True)
     c5, c6, c7 = st.columns(3)
-    kpi(c5, "AVANCEMENT MOYEN", f"{avancement:.0f}%", COULEURS["secondaire"])
-    kpi(c6, "BUDGET PRÉVU (FCFA)", f"{budget_prevu:,.0f}".replace(",", " "),
-        "#548235")
+    kpi(c5, "AVANCEMENT MOYEN", fmt_pct(avancement), COULEURS["secondaire"])
+    kpi(c6, "BUDGET PRÉVU (FCFA)", fmt_fcfa(budget_prevu), "#548235")
     taux_conso = (budget_conso / budget_prevu * 100) if budget_prevu else 0
     kpi(c7, "TAUX DE CONSOMMATION", f"{taux_conso:.1f}%", "#548235")
 
@@ -303,7 +358,7 @@ elif page == "🎯 Vue Bailleurs":
     c1, c2, c3 = st.columns(3)
     kpi(c1, "INDICATEURS SUIVIS", nb_ind, COULEURS["primaire"])
     kpi(c2, "INDICATEURS ATTEINTS", nb_atteints, "#385723")
-    kpi(c3, "ATTEINTE MOYENNE", f"{atteinte_moy*100:.0f}%", COULEURS["secondaire"])
+    kpi(c3, "ATTEINTE MOYENNE", fmt_pct(atteinte_moy), COULEURS["secondaire"])
 
     st.markdown("---")
 
@@ -311,7 +366,7 @@ elif page == "🎯 Vue Bailleurs":
     st.subheader("Pourcentage d'atteinte par indicateur")
     if nb_ind:
         ind_g = ind.copy()
-        ind_g["Pct"] = ind_g["Pourcentage atteinte"] * 100
+        ind_g["Pct"] = en_pourcentage(ind_g["Pourcentage atteinte"])
         fig = px.bar(
             ind_g, x="Pct", y="Code", orientation="h",
             color="Projet", color_discrete_map=COULEURS,
@@ -341,13 +396,10 @@ elif page == "🎯 Vue Bailleurs":
         montant_prevu = fin["Montant prevu"].sum()
         montant_recu = fin["Montant recu"].sum()
         c4, c5, c6 = st.columns(3)
-        kpi(c4, "PRÉVU TOTAL (FCFA)",
-            f"{montant_prevu:,.0f}".replace(",", " "), "#548235")
-        kpi(c5, "REÇU (FCFA)",
-            f"{montant_recu:,.0f}".replace(",", " "), "#548235")
+        kpi(c4, "PRÉVU TOTAL (FCFA)", fmt_fcfa(montant_prevu), "#548235")
+        kpi(c5, "REÇU (FCFA)", fmt_fcfa(montant_recu), "#548235")
         reste = montant_prevu - montant_recu
-        kpi(c6, "RESTE À RECEVOIR (FCFA)",
-            f"{reste:,.0f}".replace(",", " "), "#ED7D31")
+        kpi(c6, "RESTE À RECEVOIR (FCFA)", fmt_fcfa(reste), "#ED7D31")
 
         fig_f = px.bar(
             fin, x="Tranche", y=["Montant prevu", "Montant recu"],
@@ -375,27 +427,57 @@ elif page == "👥 Vue Équipe":
     st.subheader("Performance des agents")
     if not agents.empty:
         ag = agents.copy()
-        ag["Score %"] = ag["Score consolide"] * 100
+        # Score converti en pourcentage de façon sûre (fraction 0-1 ou déjà 0-100)
+        ag["Score %"] = en_pourcentage(ag["Score consolide"])
+        ag = ag.sort_values("Score %", ascending=True)
+
+        # Indicateurs de synthèse au-dessus du graphique
+        nb_agents = len(ag)
+        score_moyen = ag["Score %"].mean() if nb_agents else 0
+        nb_excellent = len(ag[ag["Niveau global"] == "Excellent"])
+        s1, s2, s3 = st.columns(3)
+        kpi(s1, "AGENTS ÉVALUÉS", nb_agents, COULEURS["primaire"])
+        kpi(s2, "SCORE MOYEN", f"{score_moyen:.0f}%", COULEURS["secondaire"])
+        kpi(s3, "NIVEAU EXCELLENT", nb_excellent, "#385723")
+        st.markdown("<br>", unsafe_allow_html=True)
+
         fig = px.bar(
-            ag.sort_values("Score %", ascending=True),
-            x="Score %", y="Agent", orientation="h",
+            ag, x="Score %", y="Agent", orientation="h",
             color="Niveau global",
             color_discrete_map={
                 "Excellent": "#385723", "Satisfaisant": "#70AD47",
                 "À améliorer": "#FFD966", "Insuffisant": "#ED7D31",
                 "Non évalué": "#A6A6A6",
             },
-            text_auto=".0f",
+            text="Score %",
         )
-        fig.update_layout(height=max(350, 30 * len(ag)),
-                          xaxis_title="Score consolidé (%)", yaxis_title="",
-                          margin=dict(t=20, b=20, l=20, r=20))
+        # Barres lisibles : hauteur fixe par agent, étiquettes nettes
+        fig.update_traces(texttemplate="%{text:.0f}%", textposition="outside",
+                          cliponaxis=False)
+        fig.update_layout(
+            height=max(300, 42 * len(ag)),
+            xaxis_title="Score consolidé (%)", yaxis_title="",
+            xaxis=dict(range=[0, 110]),
+            margin=dict(t=10, b=10, l=10, r=40),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                        xanchor="left", x=0),
+            bargap=0.25,
+        )
         st.plotly_chart(fig, use_container_width=True)
 
+        # Tableau détaillé avec score en pourcentage lisible
+        ag_tab = ag.copy()
+        ag_tab["Score"] = ag_tab["Score %"].round(0).astype(int).astype(str) + " %"
         st.dataframe(
-            agents[["Agent", "Total activites", "Score consolide",
+            ag_tab[["Agent", "Total activites", "Score",
                     "Activites critiques", "Activites en retard",
-                    "Niveau global"]],
+                    "Activites terminees", "Niveau global"]]
+            .rename(columns={
+                "Total activites": "Total activités",
+                "Activites critiques": "Critiques",
+                "Activites en retard": "En retard",
+                "Activites terminees": "Terminées",
+                "Niveau global": "Niveau"}),
             use_container_width=True, hide_index=True,
         )
     else:
