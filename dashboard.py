@@ -37,9 +37,26 @@ import plotly.graph_objects as go
 # ============================================================================
 #  CONFIGURATION
 # ============================================================================
-CHEMIN_FICHIER = "Outil_Pilotage_SE_EquiFilles_v5.xlsx"
+# --- SOURCE DES DONNÉES ----------------------------------------------------
+# Deux modes possibles :
+#
+#  MODE 1 — Fichier Excel local (par défaut) :
+#     Laisser GOOGLE_SHEET_ID vide ("").
+#     Le dashboard lit le fichier .xlsx placé dans le même dossier.
+#
+#  MODE 2 — Google Sheets en ligne (données toujours à jour) :
+#     1. Importer le fichier V5 dans Google Drive et l'ouvrir en Google Sheets.
+#     2. Menu Fichier > Partager > Publier sur le web > Publier.
+#     3. Copier l'identifiant du classeur depuis l'URL :
+#        https://docs.google.com/spreadsheets/d/IDENTIFIANT_ICI/edit
+#     4. Coller cet identifiant entre les guillemets de GOOGLE_SHEET_ID.
+#     Dès que GOOGLE_SHEET_ID est renseigné, le dashboard lit Google Sheets.
+# ---------------------------------------------------------------------------
+GOOGLE_SHEET_ID = ""   # <-- coller ici l'identifiant du Google Sheets (MODE 2)
 
-# Noms exacts des onglets sources dans le fichier Excel
+CHEMIN_FICHIER = "Outil_Pilotage_SE_EquiFilles_v5.xlsx"  # utilisé en MODE 1
+
+# Noms exacts des onglets sources (identiques en Excel et en Google Sheets)
 ONGLET_ACTIVITES   = "LK. Source Looker"
 ONGLET_INDICATEURS = "LK2. Source Indicateurs"
 ONGLET_AGENTS      = "LK3. Source Agents"
@@ -75,21 +92,38 @@ st.set_page_config(
 # ============================================================================
 #  CHARGEMENT DES DONNÉES
 # ============================================================================
+def _lire_onglet(nom_onglet):
+    """Lit un onglet, depuis Google Sheets si GOOGLE_SHEET_ID est renseigné,
+    sinon depuis le fichier Excel local."""
+    if GOOGLE_SHEET_ID:
+        # Lecture en ligne via l'export CSV de Google Sheets.
+        import urllib.parse
+        onglet_encode = urllib.parse.quote(nom_onglet)
+        url = (f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}"
+               f"/gviz/tq?tqx=out:csv&sheet={onglet_encode}")
+        return pd.read_csv(url)
+    else:
+        # Lecture locale du fichier Excel.
+        return pd.read_excel(CHEMIN_FICHIER, sheet_name=nom_onglet)
+
+
 @st.cache_data(ttl=600)  # mise en cache 10 minutes
 def charger_donnees():
-    """Lit les 5 onglets sources du fichier Excel et renvoie 5 DataFrames."""
+    """Lit les 5 onglets sources (Excel local ou Google Sheets) et renvoie
+    5 DataFrames."""
     try:
-        activites = pd.read_excel(CHEMIN_FICHIER, sheet_name=ONGLET_ACTIVITES)
-        indicateurs = pd.read_excel(CHEMIN_FICHIER, sheet_name=ONGLET_INDICATEURS)
-        agents = pd.read_excel(CHEMIN_FICHIER, sheet_name=ONGLET_AGENTS)
-        financier = pd.read_excel(CHEMIN_FICHIER, sheet_name=ONGLET_FINANCIER)
-        qualitatif = pd.read_excel(CHEMIN_FICHIER, sheet_name=ONGLET_QUALITATIF)
+        activites = _lire_onglet(ONGLET_ACTIVITES)
+        indicateurs = _lire_onglet(ONGLET_INDICATEURS)
+        agents = _lire_onglet(ONGLET_AGENTS)
+        financier = _lire_onglet(ONGLET_FINANCIER)
+        qualitatif = _lire_onglet(ONGLET_QUALITATIF)
     except FileNotFoundError:
         st.error(f"Fichier introuvable : {CHEMIN_FICHIER}. "
-                 f"Placez le fichier Excel dans le même dossier que ce script.")
+                 f"Placez le fichier Excel dans le même dossier que ce script, "
+                 f"ou renseignez GOOGLE_SHEET_ID pour lire Google Sheets.")
         st.stop()
     except Exception as e:
-        st.error(f"Erreur de lecture du fichier : {e}")
+        st.error(f"Erreur de lecture des données : {e}")
         st.stop()
 
     # Nettoyage : retirer les lignes vides (sans projet/agent/type)
