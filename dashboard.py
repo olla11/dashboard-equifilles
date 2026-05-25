@@ -52,7 +52,7 @@ import plotly.graph_objects as go
 #     4. Coller cet identifiant entre les guillemets de GOOGLE_SHEET_ID.
 #     Dès que GOOGLE_SHEET_ID est renseigné, le dashboard lit Google Sheets.
 # ---------------------------------------------------------------------------
-GOOGLE_SHEET_ID = ""   # <-- coller ici l'identifiant du Google Sheets (MODE 2)
+GOOGLE_SHEET_ID = "1y9MpwI9AQcz21KZNHJOq7j3u7Zff9lXnto_bXBxe8nk"   # <-- coller ici l'identifiant du Google Sheets (MODE 2)
 
 CHEMIN_FICHIER = "Outil_Pilotage_SE_EquiFilles_v5.xlsx"  # utilisé en MODE 1
 
