@@ -108,7 +108,7 @@ COMPTES = {
     },
     "equipe": {
         "mot_de_passe": "equipe2026",
-        "libelle": "Équipe",
+        "libelle": "Equipe",
         "pages": ["🏠 Vue Direction", "👥 Vue Équipe"],
     },
 }
