@@ -52,7 +52,7 @@ import plotly.graph_objects as go
 #     4. Coller cet identifiant entre les guillemets de GOOGLE_SHEET_ID.
 #     Dès que GOOGLE_SHEET_ID est renseigné, le dashboard lit Google Sheets.
 # ---------------------------------------------------------------------------
-GOOGLE_SHEET_ID = "1y9MpwI9AQcz21KZNHJOq7j3u7Zff9lXnto_bXBxe8nk"   # <-- coller ici l'identifiant du Google Sheets (MODE 2)
+GOOGLE_SHEET_ID = ""   # <-- coller ici l'identifiant du Google Sheets (MODE 2)
 
 CHEMIN_FICHIER = "Outil_Pilotage_SE_EquiFilles_v5.xlsx"  # utilisé en MODE 1
 
@@ -87,6 +87,75 @@ st.set_page_config(
     page_icon="📊",
     layout="wide",
 )
+
+
+# ============================================================================
+#  COMPTES ET ACCÈS  —  MODIFIER LES MOTS DE PASSE ICI
+# ============================================================================
+# Pour changer un mot de passe : remplacer la valeur "mot_de_passe" ci-dessous.
+# Pour chaque profil, "pages" liste les pages auxquelles il a accès.
+COMPTES = {
+    "direction": {
+        "mot_de_passe": "direction2026",
+        "libelle": "Direction",
+        "pages": ["🏠 Vue Direction", "🎯 Vue Bailleurs",
+                  "👥 Vue Équipe", "💬 Qualitatif"],
+    },
+    "bailleur": {
+        "mot_de_passe": "bailleur2026",
+        "libelle": "Bailleur",
+        "pages": ["🏠 Vue Direction", "🎯 Vue Bailleurs"],
+    },
+    "equipe": {
+        "mot_de_passe": "equipe2026",
+        "libelle": "Équipe",
+        "pages": ["🏠 Vue Direction", "👥 Vue Équipe"],
+    },
+}
+
+
+def page_connexion():
+    """Affiche la page de connexion et vérifie les identifiants."""
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    col_g, col_c, col_d = st.columns([1, 2, 1])
+    with col_c:
+        st.markdown(
+            "<h2 style='text-align:center;color:#1F3864;'>"
+            "📊 Tableau de bord Suivi-Évaluation</h2>",
+            unsafe_allow_html=True)
+        st.markdown(
+            "<p style='text-align:center;color:#595959;'>"
+            "ONG Equi-Filles — Connexion requise</p>",
+            unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        identifiant = st.text_input("Identifiant")
+        mot_de_passe = st.text_input("Mot de passe", type="password")
+
+        if st.button("Se connecter", use_container_width=True):
+            ident = identifiant.strip().lower()
+            compte = COMPTES.get(ident)
+            if compte and mot_de_passe == compte["mot_de_passe"]:
+                st.session_state["connecte"] = True
+                st.session_state["profil"] = ident
+                st.rerun()
+            else:
+                st.error("Identifiant ou mot de passe incorrect.")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.caption("Accès réservé aux personnes autorisées de l'ONG "
+                   "Equi-Filles et à ses partenaires.")
+
+
+# --- Contrôle d'accès : bloque le dashboard tant que non connecté ----------
+if not st.session_state.get("connecte", False):
+    page_connexion()
+    st.stop()
+
+# Profil de l'utilisateur connecté
+PROFIL = st.session_state.get("profil", "")
+PROFIL_INFO = COMPTES.get(PROFIL, {})
+PAGES_AUTORISEES = PROFIL_INFO.get("pages", ["🏠 Vue Direction"])
 
 
 # ============================================================================
@@ -241,10 +310,11 @@ st.sidebar.image(
     use_container_width=True,
 )
 st.sidebar.title("Navigation")
+st.sidebar.caption(f"Connecté : **{PROFIL_INFO.get('libelle', '')}**")
 
 page = st.sidebar.radio(
     "Choisir une page :",
-    ["🏠 Vue Direction", "🎯 Vue Bailleurs", "👥 Vue Équipe", "💬 Qualitatif"],
+    PAGES_AUTORISEES,
 )
 
 st.sidebar.markdown("---")
@@ -254,6 +324,11 @@ projet = st.sidebar.selectbox(
 )
 
 st.sidebar.markdown("---")
+if st.sidebar.button("🔓 Se déconnecter", use_container_width=True):
+    st.session_state["connecte"] = False
+    st.session_state["profil"] = ""
+    st.rerun()
+
 st.sidebar.caption(
     "Données issues du fichier de pilotage V5. "
     "Pour rafraîchir, rechargez la page (les données sont mises en cache 10 min)."
@@ -266,6 +341,11 @@ if st.sidebar.button("🔄 Recharger les données"):
 # ============================================================================
 #  PAGE 1 — VUE DIRECTION
 # ============================================================================
+# Garde de sécurité : vérifie que la page demandée est bien autorisée
+if page not in PAGES_AUTORISEES:
+    st.error("Vous n'avez pas accès à cette page.")
+    st.stop()
+
 if page == "🏠 Vue Direction":
     st.title("🏠 Vue Direction — Tableau de bord général")
     st.caption(f"Projet sélectionné : **{projet}**")
