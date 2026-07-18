@@ -33,7 +33,7 @@ import streamlit as st
 
 # ID du Google Sheets (extrait de l'URL entre /d/ et /edit)
 # En local : renseigner ici. En cloud : mettre dans les secrets.
-GOOGLE_SHEET_ID = "15PsPjcQBLa90svPxtlixlKPQH_zYMXfhtQuj-Si1miQ"
+GOOGLE_SHEET_ID = "12teIZYirXdmqgBJRI-fEW-OPEvJ4dmSGlcMqUsZbJSM"
 
 # Onglet unique de source
 ONGLET_KOBO = "K. Données Kobo"
