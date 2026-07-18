@@ -254,11 +254,6 @@ def afficher_login():
             else:
                 st.error("❌ Mot de passe incorrect")
 
-        with st.expander("ℹ️ Identifiants de test (à remplacer en prod)"):
-            st.code("""direction / direction2026
-bailleur  / bailleur2026
-equipe    / equipe2026""", language=None)
-
 
 # ============================================================================
 #  5. FILTRES DE LA SIDEBAR
