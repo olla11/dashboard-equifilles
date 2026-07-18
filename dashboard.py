@@ -33,7 +33,7 @@ import streamlit as st
 
 # ID du Google Sheets (extrait de l'URL entre /d/ et /edit)
 # En local : renseigner ici. En cloud : mettre dans les secrets.
-GOOGLE_SHEET_ID = "12teIZYirXdmqgBJRI-fEW-OPEvJ4dmSGlcMqUsZbJSM"
+GOOGLE_SHEET_ID = "15PsPjcQBLa90svPxtlixlKPQH_zYMXfhtQuj-Si1miQ"
 
 # Onglet unique de source
 ONGLET_KOBO = "K. Données Kobo"
@@ -143,8 +143,7 @@ st.markdown(f"""
 # ============================================================================
 @st.cache_data(ttl=300, show_spinner="Chargement des données...")
 def charger_donnees(sheet_id: str) -> pd.DataFrame:
-    """Lit l'onglet K. Données Kobo depuis Google Sheets publié.
-    Le classeur doit être publié : Fichier > Partager > Publier sur le web."""
+    """Lit l'onglet K. Données Kobo depuis Google Sheets publié."""
     url = (
         f"https://docs.google.com/spreadsheets/d/{sheet_id}"
         f"/gviz/tq?tqx=out:csv&sheet={ONGLET_KOBO}"
@@ -152,10 +151,9 @@ def charger_donnees(sheet_id: str) -> pd.DataFrame:
     try:
         r = requests.get(url, timeout=15)
         r.raise_for_status()
-        df = pd.read_csv(io.StringIO(r.text), skiprows=11)
-        # La ligne 12 est l'en-tête, les données commencent ligne 13
-        # skiprows=11 → ligne 12 devient l'en-tête (index 0 après skiprows)
-        return _nettoyer_df(df)
+        # Lecture brute sans en-tête : on prendra les colonnes B à AC (indices 1 à 28)
+        df_raw = pd.read_csv(io.StringIO(r.text), header=None, dtype=str)
+        return _nettoyer_df(df_raw)
     except Exception as e:
         st.error(f"❌ Erreur lecture Google Sheets : {e}")
         st.info(
@@ -165,12 +163,31 @@ def charger_donnees(sheet_id: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def _nettoyer_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Nettoie et type les colonnes du DataFrame."""
-    if df.empty:
-        return df
+def _nettoyer_df(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """Nettoie le DataFrame : cherche la vraie zone de données à partir de
+    la colonne submission_id (nombres) puis type des colonnes."""
+    if df_raw.empty or df_raw.shape[1] < 2:
+        return pd.DataFrame()
 
-    # Renommer les colonnes selon leur position (28 colonnes B à AC)
+    # Les données de K. Données Kobo commencent à la colonne B (index 1)
+    # et à la ligne 13 dans le fichier — mais gviz réindexe, on ne peut pas
+    # se fier aux numéros de ligne. On cherche la 1ère ligne où la colonne B
+    # (submission_id) contient un nombre à plusieurs chiffres.
+    col_id = df_raw.iloc[:, 1]  # Colonne B
+    ligne_debut = None
+    for idx, val in col_id.items():
+        s = str(val).strip()
+        if s.isdigit() and len(s) >= 6:  # submission_id Kobo = 9 chiffres
+            ligne_debut = idx
+            break
+
+    if ligne_debut is None:
+        return pd.DataFrame()
+
+    # Extraire les données à partir de la ligne détectée
+    df = df_raw.iloc[ligne_debut:, 1:29].copy()  # Colonnes B à AC = 28 colonnes
+
+    # Nommer les colonnes
     noms_colonnes = [
         "submission_id", "type_activite", "nom_projet", "date_remplissage",
         "periode_mo", "nom_activite", "date_debut", "date_fin", "nombre_jours",
@@ -179,27 +196,24 @@ def _nettoyer_df(df: pd.DataFrame) -> pd.DataFrame:
         "total_beneficiaires", "grand_resultat", "difficultes", "satis_global",
         "photos_nb", "has_liste_pres", "has_rapport", "has_autres_doc",
     ]
+    df.columns = noms_colonnes[:df.shape[1]]
 
-    # Ne garder que les colonnes existantes (le CSV peut avoir des cols vides)
-    df = df.iloc[:, :len(noms_colonnes)]
-    df.columns = noms_colonnes[:len(df.columns)]
-
-    # Retirer les lignes vides (celles sans type_activite)
-    df = df[df["type_activite"].notna() & (df["type_activite"] != "")]
+    # Retirer les lignes sans type_activite
+    df = df[df["type_activite"].notna() & (df["type_activite"].astype(str).str.strip() != "")]
 
     # Typer les dates
     for col in ["date_remplissage", "periode_mo", "date_debut", "date_fin"]:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
 
-    # Typer les entiers (nettoyer les espaces éventuels)
+    # Typer les entiers
     for col in ["nombre_jours", "budget", "f_total", "h_total",
                 "part_10_14", "part_15_17", "total_beneficiaires", "photos_nb"]:
         if col in df.columns:
             df[col] = (df[col].astype(str)
                               .str.replace(" ", "")
                               .str.replace(",", ".")
-                              .replace("", "0"))
+                              .replace(["", "nan", "None"], "0"))
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
 
     return df.reset_index(drop=True)
