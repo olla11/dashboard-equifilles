@@ -1,689 +1,779 @@
-# -*- coding: utf-8 -*-
 """
-============================================================================
- TABLEAU DE BORD — SUIVI-ÉVALUATION  |  ONG EQUI-FILLES
- Projets EQUIFILLES (FoSIR) & SPACE TO LEAD (Plan International Bénin)
-----------------------------------------------------------------------------
- Application Streamlit qui lit les 5 onglets sources du fichier
- « Outil de pilotage V5 » et affiche un tableau de bord complet en 4 pages.
+================================================================================
+  DASHBOARD DE PILOTAGE S&E — VERSION V6
+  ONG Equi-Filles — Projets EQUIFILLES (FoSIR) & SPACE TO LEAD (Plan Int.)
+--------------------------------------------------------------------------------
+  Lit directement depuis Google Sheets (onglet 'K. Données Kobo' unifié).
+  5 pages : Vue d'ensemble · Par type · Indicateurs · Finances · Cartographie.
+  3 profils : direction, bailleur, equipe.
 
- ─── INSTALLATION (à faire une seule fois) ─────────────────────────────────
- 1. Installer Python 3.9 ou plus récent.
- 2. Dans un terminal, installer les librairies nécessaires :
-        pip install streamlit pandas plotly openpyxl
- 3. Placer ce fichier (dashboard.py) dans un dossier.
- 4. Mettre le fichier Excel V5 dans le MÊME dossier, nommé :
-        Outil_Pilotage_SE_EquiFilles_v5.xlsx
-    (ou ajuster la variable CHEMIN_FICHIER ci-dessous)
+  LANCEMENT LOCAL :
+    pip install -r requirements.txt
+    streamlit run dashboard.py
 
- ─── LANCEMENT ─────────────────────────────────────────────────────────────
- Dans le terminal, depuis le dossier :
-        streamlit run dashboard.py
- Le tableau de bord s'ouvre dans le navigateur.
-
- ─── HÉBERGEMENT EN LIGNE (gratuit) ────────────────────────────────────────
- 1. Créer un compte sur https://streamlit.io  (Streamlit Community Cloud).
- 2. Déposer dashboard.py + le fichier Excel dans un dépôt GitHub.
- 3. Connecter le dépôt à Streamlit Cloud : l'application devient accessible
-    par un lien partageable.
-============================================================================
+  DÉPLOIEMENT STREAMLIT CLOUD :
+    1. Pousser dashboard.py + requirements.txt sur GitHub
+    2. Sur share.streamlit.io, créer une app pointant sur le repo
+    3. Dans Settings > Secrets, coller la configuration (voir plus bas)
+================================================================================
 """
 
-import streamlit as st
+import io
+from datetime import datetime
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import requests
+import streamlit as st
 
 # ============================================================================
-#  CONFIGURATION
+#  1. CONFIGURATION
 # ============================================================================
-# --- SOURCE DES DONNÉES ----------------------------------------------------
-# Deux modes possibles :
-#
-#  MODE 1 — Fichier Excel local (par défaut) :
-#     Laisser GOOGLE_SHEET_ID vide ("").
-#     Le dashboard lit le fichier .xlsx placé dans le même dossier.
-#
-#  MODE 2 — Google Sheets en ligne (données toujours à jour) :
-#     1. Importer le fichier V5 dans Google Drive et l'ouvrir en Google Sheets.
-#     2. Menu Fichier > Partager > Publier sur le web > Publier.
-#     3. Copier l'identifiant du classeur depuis l'URL :
-#        https://docs.google.com/spreadsheets/d/IDENTIFIANT_ICI/edit
-#     4. Coller cet identifiant entre les guillemets de GOOGLE_SHEET_ID.
-#     Dès que GOOGLE_SHEET_ID est renseigné, le dashboard lit Google Sheets.
-# ---------------------------------------------------------------------------
-GOOGLE_SHEET_ID = "1y9MpwI9AQcz21KZNHJOq7j3u7Zff9lXnto_bXBxe8nk"   # <-- coller ici l'identifiant du Google Sheets (MODE 2)
 
-CHEMIN_FICHIER = "Outil_Pilotage_SE_EquiFilles_v5.xlsx"  # utilisé en MODE 1
+# ID du Google Sheets (extrait de l'URL entre /d/ et /edit)
+# En local : renseigner ici. En cloud : mettre dans les secrets.
+GOOGLE_SHEET_ID = "15PsPjcQBLa90svPxtlixlKPQH_zYMXfhtQuj-Si1miQ"
 
-# Noms exacts des onglets sources (identiques en Excel et en Google Sheets)
-ONGLET_ACTIVITES   = "LK. Source Looker"
-ONGLET_INDICATEURS = "LK2. Source Indicateurs"
-ONGLET_AGENTS      = "LK3. Source Agents"
-ONGLET_FINANCIER   = "LK4. Source Financier"
-ONGLET_QUALITATIF  = "LK5. Source Qualitatif"
+# Onglet unique de source
+ONGLET_KOBO = "K. Données Kobo"
 
-# Palette de couleurs (cohérente avec le fichier Excel)
-COULEURS = {
-    "EQUIFILLES": "#C00000",
-    "SPACE TO LEAD": "#00B050",
-    "primaire": "#1F3864",
-    "secondaire": "#2E75B6",
-}
-# Couleur par statut d'activité
-COULEUR_STATUT = {
-    "À temps": "#70AD47",
-    "À surveiller": "#FFD966",
-    "En retard": "#ED7D31",
-    "Critique": "#C00000",
-    "Terminé à temps": "#385723",
-    "Terminé hors délai": "#BF6312",
-    "Non réalisé": "#404040",
-    "En attente": "#A6A6A6",
+# Palette Equi-Filles
+COLORS = {
+    "PRIMARY": "#C00000",      # Rouge EQUIFILLES
+    "SECONDARY": "#00B050",    # Vert S2L
+    "TERTIARY": "#1F3864",     # Bleu marine
+    "ACCENT": "#BF8F00",       # Or (accent)
+    "BG": "#FAFAFA",
+    "TEXT": "#1F2937",
+    "MUTE": "#6B7280",
+    "SUCCESS": "#70AD47",
+    "WARNING": "#ED7D31",
+    "DANGER": "#C00000",
 }
 
-st.set_page_config(
-    page_title="Pilotage S&E — Equi-Filles",
-    page_icon="📊",
-    layout="wide",
-)
-
-
-# ============================================================================
-#  COMPTES ET ACCÈS  —  MODIFIER LES MOTS DE PASSE ICI
-# ============================================================================
-# Pour changer un mot de passe : remplacer la valeur "mot_de_passe" ci-dessous.
-# Pour chaque profil, "pages" liste les pages auxquelles il a accès.
-COMPTES = {
+# 3 profils de login (mot de passe simple pour cette V6, à durcir ensuite)
+PROFILS = {
     "direction": {
-        "mot_de_passe": "direction2026",
-        "libelle": "Direction",
-        "pages": ["🏠 Vue Direction", "🎯 Vue Bailleurs",
-                  "👥 Vue Équipe", "💬 Qualitatif"],
+        "mdp": "direction2026",
+        "nom": "Direction (DE)",
+        "pages": ["Vue d'ensemble", "Par type d'activité", "Indicateurs & Résultats", "Finances", "Cartographie"],
     },
     "bailleur": {
-        "mot_de_passe": "bailleur2026",
-        "libelle": "Bailleur",
-        "pages": ["🏠 Vue Direction", "🎯 Vue Bailleurs"],
+        "mdp": "bailleur2026",
+        "nom": "Bailleurs (FoSIR / Plan Int.)",
+        "pages": ["Vue d'ensemble", "Indicateurs & Résultats", "Finances"],
     },
     "equipe": {
-        "mot_de_passe": "equipe2026",
-        "libelle": "Equipe",
-        "pages": ["🏠 Vue Direction", "👥 Vue Équipe"],
+        "mdp": "equipe2026",
+        "nom": "Équipe terrain",
+        "pages": ["Vue d'ensemble", "Par type d'activité", "Cartographie"],
     },
 }
 
+# Correspondance des 8 types d'activités (codes réels du formulaire Kobo)
+TYPES_ACTIVITE = {
+    "etudes":      "📚 Études, recherche & diagnostics",
+    "sensib_mob":  "📣 Sensibilisation, communication & mobilisation",
+    "form_acc":    "🎓 Formation, coaching & accompagnement",
+    "plaidoyer":   "🗣️ Plaidoyer, dialogue & gouvernance",
+    "appui_benef": "🤝 Appui aux bénéficiaires",
+    "meal":        "📊 Suivi-évaluation & capitalisation",
+    "gouv_coord":  "🏛️ Gouvernance, coordination & partenariats",
+    "autre":       "📌 Autre",
+}
 
-def page_connexion():
-    """Affiche la page de connexion et vérifie les identifiants."""
-    st.markdown("<br><br>", unsafe_allow_html=True)
-    col_g, col_c, col_d = st.columns([1, 2, 1])
-    with col_c:
-        st.markdown(
-            "<h2 style='text-align:center;color:#1F3864;'>"
-            "📊 Tableau de bord Suivi-Évaluation</h2>",
-            unsafe_allow_html=True)
-        st.markdown(
-            "<p style='text-align:center;color:#595959;'>"
-            "ONG Equi-Filles — Connexion requise</p>",
-            unsafe_allow_html=True)
-        st.markdown("<br>", unsafe_allow_html=True)
+# Correspondance projets
+PROJETS = {
+    "fosir":         "EQUIFILLES (FoSIR)",
+    "space_to_lead": "SPACE TO LEAD (Plan Int.)",
+    "autre":         "Autre",
+}
 
-        identifiant = st.text_input("Identifiant")
-        mot_de_passe = st.text_input("Mot de passe", type="password")
+# Coordonnées approximatives des communes du Bénin (fallback si GPS vide)
+COMMUNES_GPS = {
+    "gogounou":    (10.83, 2.83),
+    "malanville":  (11.86, 3.38),
+    "karimama":    (12.06, 3.19),
+    "banikoara":   (11.29, 2.44),
+    "kandi":       (11.13, 2.94),
+    "segbana":     (10.93, 3.70),
+    "cotonou":     (6.37, 2.42),
+    "parakou":     (9.34, 2.62),
+    "natitingou":  (10.32, 1.38),
+    "porto-novo":  (6.50, 2.60),
+}
 
-        if st.button("Se connecter", use_container_width=True):
-            ident = identifiant.strip().lower()
-            compte = COMPTES.get(ident)
-            if compte and mot_de_passe == compte["mot_de_passe"]:
-                st.session_state["connecte"] = True
-                st.session_state["profil"] = ident
+
+# ============================================================================
+#  2. CONFIGURATION STREAMLIT
+# ============================================================================
+st.set_page_config(
+    page_title="S&E Equi-Filles",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# CSS custom pour appliquer la palette
+st.markdown(f"""
+<style>
+    .main {{ background-color: {COLORS['BG']}; }}
+    .stMetric {{
+        background-color: white;
+        padding: 12px;
+        border-radius: 8px;
+        border-left: 4px solid {COLORS['PRIMARY']};
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }}
+    h1, h2, h3 {{ color: {COLORS['TERTIARY']}; }}
+    .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {{
+        font-weight: 600;
+    }}
+    div[data-testid="stSidebar"] {{
+        background-color: white;
+        border-right: 2px solid #E5E7EB;
+    }}
+</style>
+""", unsafe_allow_html=True)
+
+
+# ============================================================================
+#  3. LECTURE DES DONNÉES GOOGLE SHEETS
+# ============================================================================
+@st.cache_data(ttl=300, show_spinner="Chargement des données...")
+def charger_donnees(sheet_id: str) -> pd.DataFrame:
+    """Lit l'onglet K. Données Kobo depuis Google Sheets publié.
+    Le classeur doit être publié : Fichier > Partager > Publier sur le web."""
+    url = (
+        f"https://docs.google.com/spreadsheets/d/{sheet_id}"
+        f"/gviz/tq?tqx=out:csv&sheet={ONGLET_KOBO}"
+    )
+    try:
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        df = pd.read_csv(io.StringIO(r.text), skiprows=11)
+        # La ligne 12 est l'en-tête, les données commencent ligne 13
+        # skiprows=11 → ligne 12 devient l'en-tête (index 0 après skiprows)
+        return _nettoyer_df(df)
+    except Exception as e:
+        st.error(f"❌ Erreur lecture Google Sheets : {e}")
+        st.info(
+            "Vérifiez que le classeur est bien publié : "
+            "**Fichier > Partager > Publier sur le web > Publier**"
+        )
+        return pd.DataFrame()
+
+
+def _nettoyer_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Nettoie et type les colonnes du DataFrame."""
+    if df.empty:
+        return df
+
+    # Renommer les colonnes selon leur position (28 colonnes B à AC)
+    noms_colonnes = [
+        "submission_id", "type_activite", "nom_projet", "date_remplissage",
+        "periode_mo", "nom_activite", "date_debut", "date_fin", "nombre_jours",
+        "responsable", "budget", "departement", "commune", "arrondissement",
+        "village", "gps", "f_total", "h_total", "part_10_14", "part_15_17",
+        "total_beneficiaires", "grand_resultat", "difficultes", "satis_global",
+        "photos_nb", "has_liste_pres", "has_rapport", "has_autres_doc",
+    ]
+
+    # Ne garder que les colonnes existantes (le CSV peut avoir des cols vides)
+    df = df.iloc[:, :len(noms_colonnes)]
+    df.columns = noms_colonnes[:len(df.columns)]
+
+    # Retirer les lignes vides (celles sans type_activite)
+    df = df[df["type_activite"].notna() & (df["type_activite"] != "")]
+
+    # Typer les dates
+    for col in ["date_remplissage", "periode_mo", "date_debut", "date_fin"]:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
+
+    # Typer les entiers (nettoyer les espaces éventuels)
+    for col in ["nombre_jours", "budget", "f_total", "h_total",
+                "part_10_14", "part_15_17", "total_beneficiaires", "photos_nb"]:
+        if col in df.columns:
+            df[col] = (df[col].astype(str)
+                              .str.replace(" ", "")
+                              .str.replace(",", ".")
+                              .replace("", "0"))
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+
+    return df.reset_index(drop=True)
+
+
+# ============================================================================
+#  4. AUTHENTIFICATION (login simple)
+# ============================================================================
+def afficher_login():
+    """Écran de login initial."""
+    st.markdown(f"""
+    <div style='text-align: center; padding: 40px 20px 20px 20px;'>
+        <h1 style='color: {COLORS['PRIMARY']}; margin-bottom: 5px;'>
+            ONG Equi-Filles
+        </h1>
+        <p style='color: {COLORS['MUTE']}; font-size: 16px; margin-top: 0;'>
+            Système intégré de Suivi-Évaluation
+        </p>
+        <p style='color: {COLORS['TERTIARY']}; font-size: 14px; font-style: italic;'>
+            Projets EQUIFILLES (FoSIR) &amp; SPACE TO LEAD (Plan International)
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown("### 🔐 Connexion")
+        profil = st.selectbox(
+            "Profil",
+            options=list(PROFILS.keys()),
+            format_func=lambda x: PROFILS[x]["nom"],
+        )
+        mdp = st.text_input("Mot de passe", type="password")
+        if st.button("Se connecter", type="primary", use_container_width=True):
+            if mdp == PROFILS[profil]["mdp"]:
+                st.session_state["profil"] = profil
                 st.rerun()
             else:
-                st.error("Identifiant ou mot de passe incorrect.")
+                st.error("❌ Mot de passe incorrect")
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.caption("Accès réservé aux personnes autorisées de l'ONG "
-                   "Equi-Filles et à ses partenaires.")
-
-
-# --- Contrôle d'accès : bloque le dashboard tant que non connecté ----------
-if not st.session_state.get("connecte", False):
-    page_connexion()
-    st.stop()
-
-# Profil de l'utilisateur connecté
-PROFIL = st.session_state.get("profil", "")
-PROFIL_INFO = COMPTES.get(PROFIL, {})
-PAGES_AUTORISEES = PROFIL_INFO.get("pages", ["🏠 Vue Direction"])
+        with st.expander("ℹ️ Identifiants de test (à remplacer en prod)"):
+            st.code("""direction / direction2026
+bailleur  / bailleur2026
+equipe    / equipe2026""", language=None)
 
 
 # ============================================================================
-#  CHARGEMENT DES DONNÉES
+#  5. FILTRES DE LA SIDEBAR
 # ============================================================================
-def _lire_onglet(nom_onglet):
-    """Lit un onglet, depuis Google Sheets si GOOGLE_SHEET_ID est renseigné,
-    sinon depuis le fichier Excel local."""
-    if GOOGLE_SHEET_ID:
-        # Lecture en ligne via l'export CSV de Google Sheets.
-        import urllib.parse
-        onglet_encode = urllib.parse.quote(nom_onglet)
-        url = (f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}"
-               f"/gviz/tq?tqx=out:csv&sheet={onglet_encode}")
-        return pd.read_csv(url)
-    else:
-        # Lecture locale du fichier Excel.
-        return pd.read_excel(CHEMIN_FICHIER, sheet_name=nom_onglet)
+def appliquer_filtres(df: pd.DataFrame) -> pd.DataFrame:
+    """Affiche les filtres et retourne le DataFrame filtré."""
+    st.sidebar.markdown("### 🔍 Filtres")
 
-
-@st.cache_data(ttl=600)  # mise en cache 10 minutes
-def charger_donnees():
-    """Lit les 5 onglets sources (Excel local ou Google Sheets) et renvoie
-    5 DataFrames."""
-    try:
-        activites = _lire_onglet(ONGLET_ACTIVITES)
-        indicateurs = _lire_onglet(ONGLET_INDICATEURS)
-        agents = _lire_onglet(ONGLET_AGENTS)
-        financier = _lire_onglet(ONGLET_FINANCIER)
-        qualitatif = _lire_onglet(ONGLET_QUALITATIF)
-    except FileNotFoundError:
-        st.error(f"Fichier introuvable : {CHEMIN_FICHIER}. "
-                 f"Placez le fichier Excel dans le même dossier que ce script, "
-                 f"ou renseignez GOOGLE_SHEET_ID pour lire Google Sheets.")
-        st.stop()
-    except Exception as e:
-        st.error(f"Erreur de lecture des données : {e}")
-        st.stop()
-
-    # Nettoyage : retirer les lignes vides (sans projet/agent/type)
-    activites = activites.dropna(subset=["Projet"])
-    activites = activites[activites["Projet"].astype(str).str.strip() != ""]
-    # Exclure les lignes de total recopiées des Gantt
-    activites = activites[activites["Code activite"].astype(str).str.upper()
-                          != "TOTAL"]
-    activites = activites[activites["Code activite"].astype(str).str.strip()
-                          != ""]
-    indicateurs = indicateurs.dropna(subset=["Projet"])
-    indicateurs = indicateurs[indicateurs["Projet"].astype(str).str.strip() != ""]
-    agents = agents.dropna(subset=["Agent"])
-    agents = agents[agents["Agent"].astype(str).str.strip() != ""]
-    financier = financier.dropna(subset=["Projet"])
-    financier = financier[financier["Projet"].astype(str).str.strip() != ""]
-    if not qualitatif.empty and "Type de fiche" in qualitatif.columns:
-        qualitatif = qualitatif.dropna(subset=["Type de fiche"])
-        qualitatif = qualitatif[qualitatif["Type de fiche"].astype(str).str.strip() != ""]
-
-    # --- Conversion des colonnes numériques ---------------------------------
-    # Quand les données viennent de Google Sheets, les nombres peuvent être lus
-    # comme du texte (espaces, formats). On les force en numérique ici.
-    def num(df, colonnes):
-        for c in colonnes:
-            if c in df.columns:
-                # Retire espaces insécables et espaces, remplace virgule décimale
-                serie = (df[c].astype(str)
-                         .str.replace("\u202f", "", regex=False)
-                         .str.replace("\xa0", "", regex=False)
-                         .str.replace(" ", "", regex=False)
-                         .str.replace(",", ".", regex=False))
-                df[c] = pd.to_numeric(serie, errors="coerce").fillna(0)
-        return df
-
-    activites = num(activites, ["Pourcentage prevu", "Pourcentage reel",
-                                "Budget prevu", "Budget consomme",
-                                "Criticite", "Note", "Quantite cible",
-                                "Quantite realisee"])
-    indicateurs = num(indicateurs, ["Cible", "Valeur cumulee",
-                                    "Pourcentage atteinte"])
-    agents = num(agents, ["Total activites", "Activites EQUIFILLES",
-                          "Activites S2L", "Score consolide",
-                          "Activites critiques", "Activites en retard",
-                          "Activites terminees"])
-    financier = num(financier, ["Montant prevu", "Montant recu"])
-
-    return activites, indicateurs, agents, financier, qualitatif
-
-
-# ============================================================================
-#  FONCTIONS UTILITAIRES D'AFFICHAGE
-# ============================================================================
-def kpi(colonne, libelle, valeur, couleur="#1F3864"):
-    """Affiche un indicateur clé dans une colonne."""
-    colonne.markdown(
-        f"""
-        <div style="background:#F2F2F2;border-radius:8px;padding:14px;
-                    text-align:center;border-top:4px solid {couleur};">
-            <div style="font-size:13px;color:#595959;font-weight:600;">{libelle}</div>
-            <div style="font-size:30px;color:{couleur};font-weight:800;">{valeur}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    # Filtre projet
+    projets_dispo = sorted(df["nom_projet"].dropna().unique().tolist())
+    projet_sel = st.sidebar.multiselect(
+        "Projet",
+        options=projets_dispo,
+        default=projets_dispo,
+        format_func=lambda x: PROJETS.get(x, x),
     )
+    if projet_sel:
+        df = df[df["nom_projet"].isin(projet_sel)]
 
+    # Filtre type d'activité
+    types_dispo = sorted(df["type_activite"].dropna().unique().tolist())
+    type_sel = st.sidebar.multiselect(
+        "Type d'activité",
+        options=types_dispo,
+        default=types_dispo,
+        format_func=lambda x: TYPES_ACTIVITE.get(x, x),
+    )
+    if type_sel:
+        df = df[df["type_activite"].isin(type_sel)]
 
-def fmt_fcfa(valeur):
-    """Formate un montant en FCFA, de façon sûre même si la valeur est du texte."""
-    try:
-        return f"{float(valeur):,.0f}".replace(",", " ")
-    except (ValueError, TypeError):
-        return "0"
+    # Filtre commune
+    if "commune" in df.columns:
+        communes_dispo = sorted(df["commune"].dropna().unique().tolist())
+        if communes_dispo:
+            commune_sel = st.sidebar.multiselect(
+                "Commune",
+                options=communes_dispo,
+                default=[],
+                help="Laisser vide pour toutes les communes",
+            )
+            if commune_sel:
+                df = df[df["commune"].isin(commune_sel)]
 
+    # Filtre période
+    if "date_debut" in df.columns and df["date_debut"].notna().any():
+        st.sidebar.markdown("**Période**")
+        d_min = df["date_debut"].min()
+        d_max = df["date_debut"].max()
+        if pd.notna(d_min) and pd.notna(d_max):
+            date_debut = st.sidebar.date_input(
+                "Du", value=d_min.date(), min_value=d_min.date(), max_value=d_max.date(),
+            )
+            date_fin = st.sidebar.date_input(
+                "Au", value=d_max.date(), min_value=d_min.date(), max_value=d_max.date(),
+            )
+            df = df[
+                (df["date_debut"] >= pd.Timestamp(date_debut)) &
+                (df["date_debut"] <= pd.Timestamp(date_fin))
+            ]
 
-def fmt_pct(valeur):
-    """Formate un pourcentage. Accepte une fraction (0-1) ou un nombre (0-100)."""
-    try:
-        v = float(valeur)
-    except (ValueError, TypeError):
-        return "0%"
-    # Si la valeur est une fraction (<= 1.5), la convertir en pourcentage.
-    if abs(v) <= 1.5:
-        v = v * 100
-    return f"{v:.0f}%"
-
-
-def en_pourcentage(serie):
-    """Convertit une colonne en pourcentage 0-100, qu'elle soit en fraction ou non."""
-    s = pd.to_numeric(serie, errors="coerce").fillna(0)
-    # Si le maximum est <= 1.5, les valeurs sont des fractions -> x100
-    if len(s) > 0 and s.max() <= 1.5:
-        s = s * 100
-    return s
-
-
-def filtrer_projet(df, projet_choisi, colonne="Projet"):
-    """Filtre un DataFrame selon le projet sélectionné."""
-    if projet_choisi == "Tous les projets":
-        return df
-    return df[df[colonne] == projet_choisi]
-
-
-# ============================================================================
-#  CHARGEMENT
-# ============================================================================
-activites, indicateurs, agents, financier, qualitatif = charger_donnees()
-
-
-# ============================================================================
-#  BARRE LATÉRALE — NAVIGATION ET FILTRES
-# ============================================================================
-st.sidebar.image(
-    "https://via.placeholder.com/200x70/1F3864/FFFFFF?text=Equi-Filles",
-    use_container_width=True,
-)
-st.sidebar.title("Navigation")
-st.sidebar.caption(f"Connecté : **{PROFIL_INFO.get('libelle', '')}**")
-
-page = st.sidebar.radio(
-    "Choisir une page :",
-    PAGES_AUTORISEES,
-)
-
-st.sidebar.markdown("---")
-projet = st.sidebar.selectbox(
-    "Filtrer par projet :",
-    ["Tous les projets", "EQUIFILLES", "SPACE TO LEAD"],
-)
-
-st.sidebar.markdown("---")
-if st.sidebar.button("🔓 Se déconnecter", use_container_width=True):
-    st.session_state["connecte"] = False
-    st.session_state["profil"] = ""
-    st.rerun()
-
-st.sidebar.caption(
-    "Données issues du fichier de pilotage V5. "
-    "Pour rafraîchir, rechargez la page (les données sont mises en cache 10 min)."
-)
-if st.sidebar.button("🔄 Recharger les données"):
-    st.cache_data.clear()
-    st.rerun()
+    st.sidebar.markdown("---")
+    st.sidebar.caption(f"📊 **{len(df)}** activité(s) affichée(s)")
+    return df
 
 
 # ============================================================================
-#  PAGE 1 — VUE DIRECTION
+#  6. PAGE — VUE D'ENSEMBLE
 # ============================================================================
-# Garde de sécurité : vérifie que la page demandée est bien autorisée
-if page not in PAGES_AUTORISEES:
-    st.error("Vous n'avez pas accès à cette page.")
-    st.stop()
+def page_vue_ensemble(df: pd.DataFrame):
+    st.markdown("## 🏠 Vue d'ensemble")
+    st.caption("Situation consolidée des deux projets")
 
-if page == "🏠 Vue Direction":
-    st.title("🏠 Vue Direction — Tableau de bord général")
-    st.caption(f"Projet sélectionné : **{projet}**")
+    # KPI en 4 colonnes
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("📋 Activités", f"{len(df):,}".replace(",", " "))
+    c2.metric("👥 Bénéficiaires", f"{int(df['total_beneficiaires'].sum()):,}".replace(",", " "))
+    c3.metric("💰 Budget total", f"{int(df['budget'].sum()):,}".replace(",", " ") + " FCFA")
+    c4.metric("⏱️ Jours d'action", f"{int(df['nombre_jours'].sum()):,}".replace(",", " "))
 
-    act = filtrer_projet(activites, projet)
+    st.markdown("---")
 
-    # --- Indicateurs clés ---
-    nb_activites = len(act)
-    nb_terminees = len(act[act["Statut"].isin(
-        ["Terminé à temps", "Terminé hors délai"])])
-    nb_retard = len(act[act["Statut"] == "En retard"])
-    nb_critique = len(act[act["Statut"] == "Critique"])
-    avancement = act["Pourcentage reel"].mean() if nb_activites else 0
-    budget_prevu = act["Budget prevu"].sum()
-    budget_conso = act["Budget consomme"].sum()
+    # 2 graphiques côte à côte
+    col_g, col_d = st.columns(2)
+
+    with col_g:
+        st.markdown("#### 📊 Activités par type")
+        if not df.empty:
+            dfg = df.groupby("type_activite").size().reset_index(name="count")
+            dfg["label"] = dfg["type_activite"].map(TYPES_ACTIVITE).fillna(dfg["type_activite"])
+            fig = px.bar(
+                dfg.sort_values("count"),
+                x="count", y="label", orientation="h",
+                color_discrete_sequence=[COLORS["PRIMARY"]],
+                labels={"count": "Nombre d'activités", "label": ""},
+            )
+            fig.update_layout(height=350, margin=dict(l=0, r=0, t=10, b=0), showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Aucune donnée à afficher.")
+
+    with col_d:
+        st.markdown("#### 🥧 Répartition par projet")
+        if not df.empty:
+            dfp = df.groupby("nom_projet")["total_beneficiaires"].sum().reset_index()
+            dfp["label"] = dfp["nom_projet"].map(PROJETS).fillna(dfp["nom_projet"])
+            fig = px.pie(
+                dfp, values="total_beneficiaires", names="label",
+                color_discrete_sequence=[COLORS["PRIMARY"], COLORS["SECONDARY"], COLORS["ACCENT"]],
+                hole=0.4,
+            )
+            fig.update_layout(height=350, margin=dict(l=0, r=0, t=10, b=0))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Aucune donnée à afficher.")
+
+    st.markdown("---")
+
+    # Activités récentes
+    st.markdown("#### 🕒 Dernières activités enregistrées")
+    if not df.empty:
+        cols_affichage = ["date_remplissage", "type_activite", "nom_activite",
+                          "nom_projet", "commune", "total_beneficiaires", "budget"]
+        cols_dispo = [c for c in cols_affichage if c in df.columns]
+        df_recent = df.sort_values("date_remplissage", ascending=False).head(10)
+        df_recent = df_recent[cols_dispo].copy()
+        df_recent["type_activite"] = df_recent["type_activite"].map(TYPES_ACTIVITE).fillna(df_recent["type_activite"])
+        df_recent["nom_projet"] = df_recent["nom_projet"].map(PROJETS).fillna(df_recent["nom_projet"])
+        st.dataframe(df_recent, use_container_width=True, hide_index=True)
+    else:
+        st.info("Aucune activité enregistrée.")
+
+
+# ============================================================================
+#  7. PAGE — PAR TYPE D'ACTIVITÉ
+# ============================================================================
+def page_par_type(df: pd.DataFrame):
+    st.markdown("## 📁 Analyse par type d'activité")
+
+    if df.empty:
+        st.info("Aucune activité disponible.")
+        return
+
+    # Onglets par type
+    types_presents = sorted(df["type_activite"].dropna().unique().tolist())
+    if not types_presents:
+        st.info("Aucun type d'activité dans les données filtrées.")
+        return
+
+    tabs = st.tabs([TYPES_ACTIVITE.get(t, t) for t in types_presents])
+    for i, type_code in enumerate(types_presents):
+        with tabs[i]:
+            df_t = df[df["type_activite"] == type_code]
+
+            # KPI
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Activités", len(df_t))
+            c2.metric("Bénéficiaires", f"{int(df_t['total_beneficiaires'].sum()):,}".replace(",", " "))
+            c3.metric("Budget", f"{int(df_t['budget'].sum()):,}".replace(",", " ") + " FCFA")
+            c4.metric("Durée cumulée", f"{int(df_t['nombre_jours'].sum())} j")
+
+            # Désagrégation F/H
+            col_g, col_d = st.columns([1, 2])
+            with col_g:
+                st.markdown("##### 👥 Femmes / Hommes")
+                total_f = int(df_t["f_total"].sum())
+                total_h = int(df_t["h_total"].sum())
+                if total_f + total_h > 0:
+                    fig = go.Figure(data=[go.Pie(
+                        labels=["Femmes/filles", "Hommes/garçons"],
+                        values=[total_f, total_h],
+                        marker_colors=[COLORS["PRIMARY"], COLORS["TERTIARY"]],
+                        hole=0.5,
+                    )])
+                    fig.update_layout(height=250, margin=dict(l=0, r=0, t=10, b=0))
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("Pas de données F/H")
+
+            with col_d:
+                st.markdown("##### 📋 Liste des activités")
+                cols = ["nom_activite", "commune", "responsable", "total_beneficiaires", "budget"]
+                cols_dispo = [c for c in cols if c in df_t.columns]
+                st.dataframe(df_t[cols_dispo], use_container_width=True, hide_index=True, height=260)
+
+
+# ============================================================================
+#  8. PAGE — INDICATEURS & RÉSULTATS
+# ============================================================================
+def page_indicateurs(df: pd.DataFrame):
+    st.markdown("## 📊 Indicateurs & Résultats")
+    st.caption("Suivi des indicateurs des deux projets")
+
+    if df.empty:
+        st.info("Aucune donnée disponible.")
+        return
+
+    # 3 sous-onglets : Global · EQUIFILLES · S2L
+    tab1, tab2, tab3 = st.tabs(["📈 Global", "🔴 EQUIFILLES", "🟢 SPACE TO LEAD"])
+
+    with tab1:
+        _sous_page_indicateurs_global(df)
+
+    with tab2:
+        df_eq = df[df["nom_projet"] == "fosir"]
+        _sous_page_indicateurs_projet(df_eq, "EQUIFILLES (FoSIR)", COLORS["PRIMARY"])
+
+    with tab3:
+        df_s2l = df[df["nom_projet"] == "space_to_lead"]
+        _sous_page_indicateurs_projet(df_s2l, "SPACE TO LEAD", COLORS["SECONDARY"])
+
+
+def _sous_page_indicateurs_global(df: pd.DataFrame):
+    st.markdown("### 📊 Indicateurs consolidés")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total bénéficiaires", f"{int(df['total_beneficiaires'].sum()):,}".replace(",", " "))
+
+    total_f = int(df["f_total"].sum())
+    total_h = int(df["h_total"].sum())
+    part_f = (total_f / (total_f + total_h) * 100) if (total_f + total_h) > 0 else 0
+    c2.metric("Part femmes/filles", f"{part_f:.1f}%")
+
+    jeunes = int(df["part_10_14"].sum() + df["part_15_17"].sum())
+    c3.metric("Jeunes (10-17 ans)", f"{jeunes:,}".replace(",", " "))
+
+    st.markdown("---")
+
+    # Évolution mensuelle
+    if "date_debut" in df.columns and df["date_debut"].notna().any():
+        st.markdown("#### 📈 Évolution mensuelle")
+        df_ev = df.copy()
+        df_ev["mois"] = df_ev["date_debut"].dt.to_period("M").astype(str)
+        df_mens = df_ev.groupby("mois").agg(
+            activites=("submission_id", "count"),
+            beneficiaires=("total_beneficiaires", "sum"),
+        ).reset_index()
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=df_mens["mois"], y=df_mens["activites"],
+            name="Activités", marker_color=COLORS["PRIMARY"],
+        ))
+        fig.add_trace(go.Scatter(
+            x=df_mens["mois"], y=df_mens["beneficiaires"],
+            name="Bénéficiaires", yaxis="y2",
+            line=dict(color=COLORS["SECONDARY"], width=3),
+            mode="lines+markers",
+        ))
+        fig.update_layout(
+            height=400,
+            yaxis=dict(title="Activités"),
+            yaxis2=dict(title="Bénéficiaires", overlaying="y", side="right"),
+            legend=dict(orientation="h", y=1.1),
+            margin=dict(l=0, r=0, t=10, b=0),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+
+def _sous_page_indicateurs_projet(df: pd.DataFrame, nom_projet: str, couleur: str):
+    st.markdown(f"### {nom_projet}")
+    if df.empty:
+        st.info(f"Aucune activité pour {nom_projet} dans les filtres actuels.")
+        return
 
     c1, c2, c3, c4 = st.columns(4)
-    kpi(c1, "ACTIVITÉS PLANIFIÉES", nb_activites, COULEURS["primaire"])
-    kpi(c2, "ACTIVITÉS TERMINÉES", nb_terminees, "#385723")
-    kpi(c3, "EN RETARD", nb_retard, "#ED7D31")
-    kpi(c4, "CRITIQUES", nb_critique, "#C00000")
+    c1.metric("Activités", len(df))
+    c2.metric("Bénéficiaires", f"{int(df['total_beneficiaires'].sum()):,}".replace(",", " "))
+    c3.metric("Budget", f"{int(df['budget'].sum()):,}".replace(",", " ") + " FCFA")
+    total_f = int(df["f_total"].sum())
+    total_h = int(df["h_total"].sum())
+    part_f = (total_f / (total_f + total_h) * 100) if (total_f + total_h) > 0 else 0
+    c4.metric("% femmes/filles", f"{part_f:.1f}%")
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    c5, c6, c7 = st.columns(3)
-    kpi(c5, "AVANCEMENT MOYEN", fmt_pct(avancement), COULEURS["secondaire"])
-    kpi(c6, "BUDGET PRÉVU (FCFA)", fmt_fcfa(budget_prevu), "#548235")
-    taux_conso = (budget_conso / budget_prevu * 100) if budget_prevu else 0
-    kpi(c7, "TAUX DE CONSOMMATION", f"{taux_conso:.1f}%", "#548235")
+    # Bénéficiaires par type d'activité
+    st.markdown("#### 👥 Bénéficiaires par type d'activité")
+    df_ag = df.groupby("type_activite")["total_beneficiaires"].sum().reset_index()
+    df_ag["label"] = df_ag["type_activite"].map(TYPES_ACTIVITE).fillna(df_ag["type_activite"])
+    fig = px.bar(
+        df_ag.sort_values("total_beneficiaires"),
+        x="total_beneficiaires", y="label", orientation="h",
+        color_discrete_sequence=[couleur],
+        labels={"total_beneficiaires": "Bénéficiaires", "label": ""},
+    )
+    fig.update_layout(height=350, margin=dict(l=0, r=0, t=10, b=0))
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# ============================================================================
+#  9. PAGE — FINANCES
+# ============================================================================
+def page_finances(df: pd.DataFrame):
+    st.markdown("## 💰 Suivi financier")
+    st.caption("Consommation budgétaire par type d'activité et par projet")
+
+    if df.empty:
+        st.info("Aucune donnée disponible.")
+        return
+
+    # KPI
+    total_budget = int(df["budget"].sum())
+    budget_moy = int(df["budget"].mean()) if len(df) > 0 else 0
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("💰 Budget cumulé", f"{total_budget:,}".replace(",", " ") + " FCFA")
+    c2.metric("📊 Budget moyen/activité", f"{budget_moy:,}".replace(",", " ") + " FCFA")
+    c3.metric("📋 Activités avec budget", int((df["budget"] > 0).sum()))
 
     st.markdown("---")
 
     col_g, col_d = st.columns(2)
 
-    # --- Graphique répartition par statut ---
     with col_g:
-        st.subheader("Répartition des activités par statut")
-        if nb_activites:
-            rep = act["Statut"].value_counts().reset_index()
-            rep.columns = ["Statut", "Nombre"]
-            fig = px.pie(
-                rep, names="Statut", values="Nombre", hole=0.45,
-                color="Statut", color_discrete_map=COULEUR_STATUT,
-            )
-            fig.update_traces(textposition="outside", textinfo="label+value")
-            fig.update_layout(showlegend=False, height=380,
-                              margin=dict(t=20, b=20, l=20, r=20))
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Aucune activité à afficher.")
+        st.markdown("#### 💵 Budget par type d'activité")
+        df_ag = df.groupby("type_activite")["budget"].sum().reset_index()
+        df_ag["label"] = df_ag["type_activite"].map(TYPES_ACTIVITE).fillna(df_ag["type_activite"])
+        fig = px.bar(
+            df_ag.sort_values("budget"),
+            x="budget", y="label", orientation="h",
+            color_discrete_sequence=[COLORS["ACCENT"]],
+            labels={"budget": "Budget (FCFA)", "label": ""},
+        )
+        fig.update_layout(height=400, margin=dict(l=0, r=0, t=10, b=0))
+        st.plotly_chart(fig, use_container_width=True)
 
-    # --- Graphique avancement par projet ---
     with col_d:
-        st.subheader("Avancement moyen par projet")
-        avp = activites.groupby("Projet")["Pourcentage reel"].mean().reset_index()
-        fig2 = px.bar(
-            avp, x="Projet", y="Pourcentage reel", color="Projet",
-            color_discrete_map=COULEURS, text_auto=".0f",
+        st.markdown("#### 🥧 Répartition par projet")
+        df_pr = df.groupby("nom_projet")["budget"].sum().reset_index()
+        df_pr["label"] = df_pr["nom_projet"].map(PROJETS).fillna(df_pr["nom_projet"])
+        fig = px.pie(
+            df_pr, values="budget", names="label",
+            color_discrete_sequence=[COLORS["PRIMARY"], COLORS["SECONDARY"], COLORS["ACCENT"]],
+            hole=0.4,
         )
-        fig2.update_layout(showlegend=False, height=380,
-                           yaxis_title="Avancement (%)",
-                           margin=dict(t=20, b=20, l=20, r=20))
-        st.plotly_chart(fig2, use_container_width=True)
-
-    # --- Tableau de synthèse ---
-    st.subheader("Synthèse des activités")
-    colonnes_aff = ["Projet", "Code activite", "Activite", "Responsable",
-                    "Statut", "Pourcentage reel"]
-    st.dataframe(
-        act[colonnes_aff].rename(columns={"Pourcentage reel": "% réel"}),
-        use_container_width=True, hide_index=True,
-    )
-
-
-# ============================================================================
-#  PAGE 2 — VUE BAILLEURS
-# ============================================================================
-elif page == "🎯 Vue Bailleurs":
-    st.title("🎯 Vue Bailleurs — Résultats et financement")
-    st.caption(f"Projet sélectionné : **{projet}**")
-
-    ind = filtrer_projet(indicateurs, projet)
-    fin = filtrer_projet(financier, projet)
-
-    # --- Indicateurs de résultats ---
-    st.subheader("Indicateurs de résultats")
-    nb_ind = len(ind)
-    nb_atteints = len(ind[ind["Statut"] == "Atteint"])
-    atteinte_moy = ind["Pourcentage atteinte"].mean() if nb_ind else 0
-
-    c1, c2, c3 = st.columns(3)
-    kpi(c1, "INDICATEURS SUIVIS", nb_ind, COULEURS["primaire"])
-    kpi(c2, "INDICATEURS ATTEINTS", nb_atteints, "#385723")
-    kpi(c3, "ATTEINTE MOYENNE", fmt_pct(atteinte_moy), COULEURS["secondaire"])
-
-    st.markdown("---")
-
-    # --- Graphique atteinte par indicateur ---
-    st.subheader("Pourcentage d'atteinte par indicateur")
-    if nb_ind:
-        ind_g = ind.copy()
-        ind_g["Pct"] = en_pourcentage(ind_g["Pourcentage atteinte"])
-        fig = px.bar(
-            ind_g, x="Pct", y="Code", orientation="h",
-            color="Projet", color_discrete_map=COULEURS,
-            text_auto=".0f", hover_data=["Indicateur"],
-        )
-        fig.update_layout(
-            height=max(400, 22 * nb_ind), xaxis_title="Atteinte (%)",
-            yaxis_title="", margin=dict(t=20, b=20, l=20, r=20),
-        )
-        fig.add_vline(x=100, line_dash="dash", line_color="green")
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Aucun indicateur à afficher.")
-
-    # --- Tableau des indicateurs ---
-    st.dataframe(
-        ind[["Projet", "Code", "Indicateur", "Cible",
-             "Valeur cumulee", "Pourcentage atteinte", "Statut"]],
-        use_container_width=True, hide_index=True,
-    )
-
-    st.markdown("---")
-
-    # --- Suivi financier (décaissements) ---
-    st.subheader("Décaissements des bailleurs")
-    if not fin.empty:
-        montant_prevu = fin["Montant prevu"].sum()
-        montant_recu = fin["Montant recu"].sum()
-        c4, c5, c6 = st.columns(3)
-        kpi(c4, "PRÉVU TOTAL (FCFA)", fmt_fcfa(montant_prevu), "#548235")
-        kpi(c5, "REÇU (FCFA)", fmt_fcfa(montant_recu), "#548235")
-        reste = montant_prevu - montant_recu
-        kpi(c6, "RESTE À RECEVOIR (FCFA)", fmt_fcfa(reste), "#ED7D31")
-
-        fig_f = px.bar(
-            fin, x="Tranche", y=["Montant prevu", "Montant recu"],
-            barmode="group", color_discrete_sequence=["#A6A6A6", "#548235"],
-        )
-        fig_f.update_layout(height=350, yaxis_title="FCFA",
-                            margin=dict(t=20, b=20, l=20, r=20))
-        st.plotly_chart(fig_f, use_container_width=True)
-
-        st.dataframe(fin, use_container_width=True, hide_index=True)
-    else:
-        st.info("Aucune donnée de décaissement.")
-
-
-# ============================================================================
-#  PAGE 3 — VUE ÉQUIPE
-# ============================================================================
-elif page == "👥 Vue Équipe":
-    st.title("👥 Vue Équipe — Suivi opérationnel")
-    st.caption(f"Projet sélectionné : **{projet}**")
-
-    act = filtrer_projet(activites, projet)
-
-    # --- Performance des agents ---
-    st.subheader("Performance des agents")
-    if not agents.empty:
-        ag = agents.copy()
-        # Score converti en pourcentage de façon sûre (fraction 0-1 ou déjà 0-100)
-        ag["Score %"] = en_pourcentage(ag["Score consolide"])
-        ag = ag.sort_values("Score %", ascending=True)
-
-        # Indicateurs de synthèse au-dessus du graphique
-        nb_agents = len(ag)
-        score_moyen = ag["Score %"].mean() if nb_agents else 0
-        nb_excellent = len(ag[ag["Niveau global"] == "Excellent"])
-        s1, s2, s3 = st.columns(3)
-        kpi(s1, "AGENTS ÉVALUÉS", nb_agents, COULEURS["primaire"])
-        kpi(s2, "SCORE MOYEN", f"{score_moyen:.0f}%", COULEURS["secondaire"])
-        kpi(s3, "NIVEAU EXCELLENT", nb_excellent, "#385723")
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        fig = px.bar(
-            ag, x="Score %", y="Agent", orientation="h",
-            color="Niveau global",
-            color_discrete_map={
-                "Excellent": "#385723", "Satisfaisant": "#70AD47",
-                "À améliorer": "#FFD966", "Insuffisant": "#ED7D31",
-                "Non évalué": "#A6A6A6",
-            },
-            text="Score %",
-        )
-        # Barres lisibles : hauteur fixe par agent, étiquettes nettes
-        fig.update_traces(texttemplate="%{text:.0f}%", textposition="outside",
-                          cliponaxis=False)
-        fig.update_layout(
-            height=max(300, 42 * len(ag)),
-            xaxis_title="Score consolidé (%)", yaxis_title="",
-            xaxis=dict(range=[0, 110]),
-            margin=dict(t=10, b=10, l=10, r=40),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                        xanchor="left", x=0),
-            bargap=0.25,
-        )
+        fig.update_layout(height=400, margin=dict(l=0, r=0, t=10, b=0))
         st.plotly_chart(fig, use_container_width=True)
 
-        # Tableau détaillé avec score en pourcentage lisible
-        ag_tab = ag.copy()
-        ag_tab["Score"] = ag_tab["Score %"].round(0).astype(int).astype(str) + " %"
-        st.dataframe(
-            ag_tab[["Agent", "Total activites", "Score",
-                    "Activites critiques", "Activites en retard",
-                    "Activites terminees", "Niveau global"]]
-            .rename(columns={
-                "Total activites": "Total activités",
-                "Activites critiques": "Critiques",
-                "Activites en retard": "En retard",
-                "Activites terminees": "Terminées",
-                "Niveau global": "Niveau"}),
-            use_container_width=True, hide_index=True,
+    st.markdown("---")
+
+    # Top activités par budget
+    st.markdown("#### 🏆 Top 10 activités les plus coûteuses")
+    top = df.nlargest(10, "budget")[["nom_activite", "type_activite", "commune", "budget"]].copy()
+    top["type_activite"] = top["type_activite"].map(TYPES_ACTIVITE).fillna(top["type_activite"])
+    st.dataframe(top, use_container_width=True, hide_index=True)
+
+
+# ============================================================================
+#  10. PAGE — CARTOGRAPHIE
+# ============================================================================
+def page_cartographie(df: pd.DataFrame):
+    st.markdown("## 🗺️ Cartographie des activités")
+    st.caption("Localisation des activités par département et commune")
+
+    if df.empty:
+        st.info("Aucune activité à cartographier.")
+        return
+
+    # Extraire lat/lng du champ GPS (format "lat, lng")
+    df_gps = df.copy()
+    df_gps["lat"] = None
+    df_gps["lng"] = None
+
+    for idx, row in df_gps.iterrows():
+        # 1. Essayer le champ GPS
+        gps_str = str(row.get("gps", ""))
+        if gps_str and "," in gps_str:
+            try:
+                parts = gps_str.replace(" ", "").split(",")
+                lat, lng = float(parts[0]), float(parts[1])
+                if lat != 0 and lng != 0:
+                    df_gps.at[idx, "lat"] = lat
+                    df_gps.at[idx, "lng"] = lng
+                    continue
+            except (ValueError, IndexError):
+                pass
+        # 2. Fallback : coordonnées de la commune
+        commune = str(row.get("commune", "")).strip().lower()
+        if commune in COMMUNES_GPS:
+            df_gps.at[idx, "lat"] = COMMUNES_GPS[commune][0]
+            df_gps.at[idx, "lng"] = COMMUNES_GPS[commune][1]
+
+    df_carte = df_gps[df_gps["lat"].notna() & df_gps["lng"].notna()].copy()
+
+    if df_carte.empty:
+        st.warning(
+            "Aucune coordonnée GPS exploitable. "
+            "Vérifiez que les activités contiennent des coordonnées GPS "
+            "ou que la commune est dans le dictionnaire de fallback."
         )
-    else:
-        st.info("Aucun agent renseigné.")
+        return
+
+    st.info(f"📍 {len(df_carte)} activité(s) géolocalisée(s) sur {len(df)} total.")
+
+    df_carte["label"] = df_carte["type_activite"].map(TYPES_ACTIVITE).fillna(df_carte["type_activite"])
+    df_carte["projet_label"] = df_carte["nom_projet"].map(PROJETS).fillna(df_carte["nom_projet"])
+
+    fig = px.scatter_mapbox(
+        df_carte,
+        lat="lat", lon="lng",
+        color="projet_label",
+        size="total_beneficiaires",
+        hover_name="nom_activite",
+        hover_data={"label": True, "commune": True, "total_beneficiaires": True,
+                    "lat": False, "lng": False, "projet_label": False},
+        color_discrete_map={
+            "EQUIFILLES (FoSIR)": COLORS["PRIMARY"],
+            "SPACE TO LEAD (Plan Int.)": COLORS["SECONDARY"],
+        },
+        zoom=6,
+        height=600,
+        mapbox_style="open-street-map",
+    )
+    fig.update_layout(margin=dict(l=0, r=0, t=0, b=0))
+    st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("---")
 
-    # --- Activités à risque ---
-    st.subheader("⚠️ Activités critiques et en retard")
-    a_risque = act[act["Statut"].isin(["Critique", "En retard"])]
-    if not a_risque.empty:
-        st.dataframe(
-            a_risque[["Projet", "Code activite", "Activite", "Responsable",
-                      "Date fin prevue", "Statut", "Pourcentage reel"]]
-            .rename(columns={"Pourcentage reel": "% réel"}),
-            use_container_width=True, hide_index=True,
-        )
-    else:
-        st.success("Aucune activité critique ou en retard. 👍")
+    # Répartition par département/commune
+    col_g, col_d = st.columns(2)
 
-    # --- Activités détaillées ---
-    st.subheader("Toutes les activités")
-    resp_liste = ["Tous"] + sorted(
-        act["Responsable"].dropna().unique().tolist())
-    resp_choisi = st.selectbox("Filtrer par responsable :", resp_liste)
-    act_aff = act if resp_choisi == "Tous" else act[
-        act["Responsable"] == resp_choisi]
-    st.dataframe(
-        act_aff[["Code activite", "Activite", "Responsable", "Criticite",
-                 "Statut", "Pourcentage prevu", "Pourcentage reel"]],
-        use_container_width=True, hide_index=True,
+    with col_g:
+        st.markdown("#### 🏛️ Activités par département")
+        if "departement" in df.columns:
+            df_dep = df.groupby("departement").size().reset_index(name="count")
+            df_dep = df_dep.sort_values("count", ascending=True)
+            fig = px.bar(
+                df_dep, x="count", y="departement", orientation="h",
+                color_discrete_sequence=[COLORS["TERTIARY"]],
+                labels={"count": "Activités", "departement": ""},
+            )
+            fig.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0))
+            st.plotly_chart(fig, use_container_width=True)
+
+    with col_d:
+        st.markdown("#### 🏘️ Top 10 communes")
+        if "commune" in df.columns:
+            df_com = df.groupby("commune").size().reset_index(name="count")
+            df_com = df_com.nlargest(10, "count").sort_values("count", ascending=True)
+            fig = px.bar(
+                df_com, x="count", y="commune", orientation="h",
+                color_discrete_sequence=[COLORS["ACCENT"]],
+                labels={"count": "Activités", "commune": ""},
+            )
+            fig.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0))
+            st.plotly_chart(fig, use_container_width=True)
+
+
+# ============================================================================
+#  11. EXPORT DES DONNÉES
+# ============================================================================
+def bouton_export(df: pd.DataFrame):
+    """Ajoute un bouton de téléchargement CSV dans la sidebar."""
+    if df.empty:
+        return
+    csv = df.to_csv(index=False).encode("utf-8-sig")
+    st.sidebar.download_button(
+        label="📥 Exporter (CSV)",
+        data=csv,
+        file_name=f"activites_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+        mime="text/csv",
+        use_container_width=True,
     )
 
 
 # ============================================================================
-#  PAGE 4 — QUALITATIF
+#  12. MAIN
 # ============================================================================
-elif page == "💬 Qualitatif":
-    st.title("💬 Qualitatif — Témoignages et incidents")
-    st.warning(
-        "⚠️ Cette page contient des données sensibles. "
-        "Son accès doit être restreint à la direction et à l'agent S&E.")
+def main():
+    # Étape 1 : authentification
+    if "profil" not in st.session_state:
+        afficher_login()
+        return
 
-    if qualitatif.empty or "Type de fiche" not in qualitatif.columns:
-        st.info("Aucune donnée qualitative pour l'instant. "
-                "Cette page se remplira dès que des fiches F8 seront collectées.")
-    else:
-        temoignages = qualitatif[qualitatif["Type de fiche"] == "Témoignage"]
-        incidents = qualitatif[qualitatif["Type de fiche"] == "Incident"]
+    profil = st.session_state["profil"]
+    info_profil = PROFILS[profil]
 
-        c1, c2, c3 = st.columns(3)
-        kpi(c1, "TÉMOIGNAGES", len(temoignages), "#70AD47")
-        kpi(c2, "INCIDENTS", len(incidents), "#C00000")
-        a_traiter = len(incidents[incidents["Statut incident"] == "À traiter"]) \
-            if "Statut incident" in incidents.columns else 0
-        kpi(c3, "INCIDENTS À TRAITER", a_traiter, "#ED7D31")
-
+    # Sidebar : identité + déconnexion
+    with st.sidebar:
+        st.markdown(f"### 👤 {info_profil['nom']}")
+        if st.button("🚪 Se déconnecter", use_container_width=True):
+            del st.session_state["profil"]
+            st.rerun()
         st.markdown("---")
 
-        # --- Témoignages ---
-        st.subheader("Témoignages / histoires de changement")
-        if not temoignages.empty:
-            # Répartition par domaine
-            if "Domaine" in temoignages.columns:
-                dom = temoignages["Domaine"].value_counts().reset_index()
-                dom.columns = ["Domaine", "Nombre"]
-                fig = px.bar(dom, x="Domaine", y="Nombre",
-                             color_discrete_sequence=["#70AD47"])
-                fig.update_layout(height=300,
-                                  margin=dict(t=20, b=20, l=20, r=20))
-                st.plotly_chart(fig, use_container_width=True)
-            # Liste des témoignages
-            for _, t in temoignages.iterrows():
-                with st.expander(
-                        f"📖 {t.get('Domaine', 'Témoignage')} — "
-                        f"{t.get('Commune/Site', '')}"):
-                    st.write(t.get("Recit/Description", ""))
-                    cit = t.get("Citation", "")
-                    if cit and str(cit).strip():
-                        st.markdown(f"> *« {cit} »*")
-        else:
-            st.info("Aucun témoignage enregistré.")
+    # Étape 2 : charger les données
+    df = charger_donnees(GOOGLE_SHEET_ID)
 
-        st.markdown("---")
+    if df.empty:
+        st.warning("⚠️ Aucune donnée disponible. Vérifiez la source Google Sheets.")
+        st.stop()
 
-        # --- Incidents ---
-        st.subheader("Suivi des incidents")
-        if not incidents.empty:
-            col_a, col_b = st.columns(2)
-            with col_a:
-                if "Gravite" in incidents.columns:
-                    grav = incidents["Gravite"].value_counts().reset_index()
-                    grav.columns = ["Gravité", "Nombre"]
-                    fig = px.pie(grav, names="Gravité", values="Nombre",
-                                 hole=0.4,
-                                 color_discrete_sequence=["#FFD966",
-                                                          "#ED7D31",
-                                                          "#C00000"])
-                    fig.update_layout(height=300,
-                                      margin=dict(t=20, b=20, l=20, r=20))
-                    st.plotly_chart(fig, use_container_width=True)
-            with col_b:
-                if "Statut incident" in incidents.columns:
-                    stt = incidents["Statut incident"].value_counts().reset_index()
-                    stt.columns = ["Statut", "Nombre"]
-                    fig = px.bar(stt, x="Statut", y="Nombre",
-                                 color_discrete_sequence=["#2E75B6"])
-                    fig.update_layout(height=300,
-                                      margin=dict(t=20, b=20, l=20, r=20))
-                    st.plotly_chart(fig, use_container_width=True)
-            # Tableau (sans le détail nominatif)
-            cols_inc = [c for c in ["Date", "Commune/Site", "Gravite",
-                                    "Statut incident", "Structure reference"]
-                        if c in incidents.columns]
-            st.dataframe(incidents[cols_inc], use_container_width=True,
-                         hide_index=True)
-        else:
-            st.success("Aucun incident signalé.")
+    # Étape 3 : filtres
+    df_filtre = appliquer_filtres(df)
+
+    # Étape 4 : bouton export
+    bouton_export(df_filtre)
+
+    # Étape 5 : sélection de page
+    pages_dispo = info_profil["pages"]
+    page = st.sidebar.radio("📄 Page", options=pages_dispo)
+
+    # Étape 6 : afficher la page choisie
+    st.markdown(f"""
+    <div style='background: linear-gradient(90deg, {COLORS['PRIMARY']} 0%, {COLORS['TERTIARY']} 100%);
+                padding: 15px 25px; border-radius: 8px; margin-bottom: 20px;'>
+        <h4 style='color: white; margin: 0;'>📊 Système S&E — Equi-Filles</h4>
+        <p style='color: white; margin: 5px 0 0 0; font-size: 13px;'>
+            EQUIFILLES (FoSIR) &amp; SPACE TO LEAD (Plan International Bénin)
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if page == "Vue d'ensemble":
+        page_vue_ensemble(df_filtre)
+    elif page == "Par type d'activité":
+        page_par_type(df_filtre)
+    elif page == "Indicateurs & Résultats":
+        page_indicateurs(df_filtre)
+    elif page == "Finances":
+        page_finances(df_filtre)
+    elif page == "Cartographie":
+        page_cartographie(df_filtre)
+
+    # Footer
+    st.markdown("---")
+    st.caption(
+        f"🔄 Dernière mise à jour : {datetime.now().strftime('%d/%m/%Y %H:%M')}  ·  "
+        f"Source : Google Sheets ({ONGLET_KOBO})  ·  "
+        f"ONG Equi-Filles — Système S&E V6"
+    )
 
 
-# ============================================================================
-#  PIED DE PAGE
-# ============================================================================
-st.markdown("---")
-st.caption(
-    "Tableau de bord Suivi-Évaluation — ONG Equi-Filles | "
-    "Projets EQUIFILLES & SPACE TO LEAD | "
-    "Données : Outil de pilotage V5"
-)
+if __name__ == "__main__":
+    main()
